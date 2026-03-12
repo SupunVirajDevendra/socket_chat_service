@@ -38,7 +38,7 @@ public class Server {
     }
 
     public static void privateMessage(String targetUser, String message) {
-        sendToUser(targetUser, "[Private] " + message);
+        sendToUser(targetUser, message);
     }
 
     public static void sendToUser(String targetUser, String message) {

@@ -63,3 +63,14 @@ Connection error with hnb
 Connection error with sampath
 Connection error with dfcc
 Connection error with boc
+Server started.
+a connected.
+b connected.
+c connected.
+Server started.
+hi connected.
+h connected.
+b connected.
+Connection error with hi
+Connection error with h
+Connection error with b
