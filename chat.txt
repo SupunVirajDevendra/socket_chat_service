@@ -1,51 +1,56 @@
 Server started...
+hi connected.
+zoo connected.
+zoo disconnected.
+Connection error with hi
+Server started...
 anura connected.
+zian connected.
+zian disconnected.
+anura disconnected.
+Server started...
+supun connected.
+hello connected.
+Connection error with supun
+Connection error with hello
+Server started...
+asas connected.
+Connection error with asas
+Server started...
+Connection error with null
 sahan connected.
-maya connected.
+shaa connected.
 sahan disconnected.
-Connection error with anura
-maya disconnected.
+Connection error with shaa
 Server started...
-heyyy connected.
-dooo connected.
-mooo connected.
-heyyy disconnected.
+Connection error with null
+Server started...
+sahan connected.
+nimal connected.
+zoo connected.
+Server started...
+Bob connected.
+Alice connected.
+Bob disconnected.
+Alice disconnected.
+Server started...
+Bob connected.
+Alice connected.
+Alice disconnected.
+Bob disconnected.
+Server started...
+alice connected.
+bob connected.
+supun connected.
+Connection error with bob
+bob connected.
+Connection error with bob
+Connection error with alice
+Connection error with supun
+Server started.
+alice connected.
 john connected.
-dooo disconnected.
-john disconnected.
-Connection error with mooo
-Server started...
-anura connected.
-sathya connected.
-renuja connected.
-anuda connected.
-Connection error with sathya
-Connection error with anuda
-Connection error with renuja
-Connection error with anura
-Server started...
 supun connected.
-sahan connected.
-saman connected.
-nisal connected.
-saman disconnected.
-abeeth connected.
-Connection error with sahan
-anura connected.
-Server started...
-sahan connected.
-supun connected.
-sahan connected.
-Connection error with sahan
-sahan connected.
-anura connected.
-Server started...
-T1 connected.
-Connection error with T1
-T1 connected.
-Server started...
-T1 connected.
-T2 connected.
-T3 connected.
-Connection error with T3
-Server started...
+supun disconnected.
+Connection error with john
+Connection error with alice

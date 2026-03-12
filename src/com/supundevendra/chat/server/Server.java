@@ -1,4 +1,4 @@
-package code2;
+package com.supundevendra.chat.server;
 
 import java.io.*;
 import java.net.*;
@@ -8,30 +8,25 @@ public class Server {
 
     private static final int PORT = 12346;
 
-    // Store connected clients
     static List<ClientHandler> clients = Collections.synchronizedList(new ArrayList<>());
 
     public static void main(String[] args) {
+        System.out.println("Server started on port " + PORT);
+        logMessage("Server started.");
 
-        System.out.println("Server started...");
-        logMessage("Server started...");
-
-        try (ServerSocket s2 = new ServerSocket(PORT)) {
-
+        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
             while (true) {
-                Socket s3 = s2.accept();
-                ClientHandler handler = new ClientHandler(s3);
+                Socket clientSocket = serverSocket.accept();
+                ClientHandler handler = new ClientHandler(clientSocket);
                 clients.add(handler);
                 new Thread(handler).start();
             }
-
         } catch (IOException e) {
             System.out.println("Server error: " + e.getMessage());
             logMessage("Server error: " + e.getMessage());
         }
     }
 
-    // Broadcast to all clients
     public static void broadcast(String message, ClientHandler sender) {
         synchronized (clients) {
             for (ClientHandler client : clients) {
@@ -42,29 +37,30 @@ public class Server {
         }
     }
 
-    // Private message
     public static void privateMessage(String targetUser, String message) {
+        sendToUser(targetUser, "[Private] " + message);
+    }
+
+    public static void sendToUser(String targetUser, String message) {
         synchronized (clients) {
             for (ClientHandler client : clients) {
                 if (client.getUsername().equalsIgnoreCase(targetUser)) {
-                    client.sendMessage("[Private] " + message);
+                    client.sendMessage(message);
                     break;
                 }
             }
         }
     }
 
-    // Remove client
     public static void removeClient(ClientHandler client) {
         clients.remove(client);
     }
 
-    // Log to file
-    private static void logMessage(String message) {
-        try (FileWriter chatlog = new FileWriter("chat.txt", true)) {
-            chatlog.write(message + "\n");
+    static void logMessage(String message) {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter("chat.txt", true))) {
+            writer.write(message + "\n");
         } catch (IOException e) {
-            System.out.println("Logging error.");
+            System.out.println("Failed to write to log file.");
         }
     }
 }
