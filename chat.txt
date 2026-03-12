@@ -54,3 +54,12 @@ supun connected.
 supun disconnected.
 Connection error with john
 Connection error with alice
+Server started.
+boc connected.
+hnb connected.
+sampath connected.
+dfcc connected.
+Connection error with hnb
+Connection error with sampath
+Connection error with dfcc
+Connection error with boc
