@@ -1,198 +1,58 @@
 package com.supundevendra.iso;
 
-import java.nio.charset.Charset;
+import org.jpos.iso.ISOMsg;
+import org.jpos.iso.ISOUtil;
+import org.jpos.iso.packager.GenericPackager;
+
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Custom ISO 8583 field parser for EBCDIC-encoded Mastercard messages.
- *
- * <p>Decode pipeline:
- * <ol>
- *   <li>Extract hex string from raw input (strips network prefix and IP address if present)</li>
- *   <li>Convert hex to raw bytes</li>
- *   <li>Strip 2-byte binary length header</li>
- *   <li>EBCDIC-decode the 4-byte MTI</li>
- *   <li>Read primary bitmap (8 bytes); extend to 16 bytes if secondary bitmap bit is set</li>
- *   <li>EBCDIC-decode the field data block</li>
- *   <li>Walk enabled fields from the bitmap and parse each according to its type</li>
- * </ol>
- *
- * <p>Supported field types:
- * <ul>
- *   <li>{@code IFA_NUMERIC / IF_CHAR} — fixed-length ASCII characters</li>
- *   <li>{@code IFA_LLNUM / IFA_LLCHAR} — 2-digit ASCII length prefix followed by data</li>
- *   <li>{@code IFA_LLLCHAR} — 3-digit ASCII length prefix followed by data</li>
- *   <li>{@code IFB_BINARY} — fixed-length raw binary bytes</li>
- * </ul>
+
+/*
+ * ISO 8583 message parser backed by the jPOS
  */
 public class ISOMessageParser {
 
-    private static final int TYPE_FIXED_CHAR  = 1;
-    private static final int TYPE_LLVAR_CHAR  = 2;
-    private static final int TYPE_LLLVAR_CHAR = 3;
-    private static final int TYPE_BINARY      = 4;
-
     private static final int HEADER_BYTES = 2;
-    private static final int MTI_BYTES    = 4;
-    private static final int BITMAP_BYTES = 8;
 
-    private static final Charset EBCDIC = Charset.forName("IBM037");
-    private static final Charset ASCII  = Charset.forName("US-ASCII");
-
-    private static final int[][] FIELD_DEF = new int[129][2];
+    /* Singleton packager loaded from classpath packager.xml */
+    private static final GenericPackager PACKAGER;
+    private static final Exception       PACKAGER_INIT_ERROR;
 
     static {
-        FIELD_DEF[1]   = new int[]{TYPE_BINARY,       8};
-        FIELD_DEF[2]   = new int[]{TYPE_LLVAR_CHAR,  19};
-        FIELD_DEF[3]   = new int[]{TYPE_FIXED_CHAR,   6};
-        FIELD_DEF[4]   = new int[]{TYPE_FIXED_CHAR,  12};
-        FIELD_DEF[5]   = new int[]{TYPE_FIXED_CHAR,  12};
-        FIELD_DEF[6]   = new int[]{TYPE_FIXED_CHAR,  12};
-        FIELD_DEF[7]   = new int[]{TYPE_FIXED_CHAR,  10};
-        FIELD_DEF[8]   = new int[]{TYPE_FIXED_CHAR,   8};
-        FIELD_DEF[9]   = new int[]{TYPE_FIXED_CHAR,   8};
-        FIELD_DEF[10]  = new int[]{TYPE_FIXED_CHAR,   8};
-        FIELD_DEF[11]  = new int[]{TYPE_FIXED_CHAR,   6};
-        FIELD_DEF[12]  = new int[]{TYPE_FIXED_CHAR,   6};
-        FIELD_DEF[13]  = new int[]{TYPE_FIXED_CHAR,   4};
-        FIELD_DEF[14]  = new int[]{TYPE_FIXED_CHAR,   4};
-        FIELD_DEF[15]  = new int[]{TYPE_FIXED_CHAR,   4};
-        FIELD_DEF[16]  = new int[]{TYPE_FIXED_CHAR,   4};
-        FIELD_DEF[17]  = new int[]{TYPE_FIXED_CHAR,   4};
-        FIELD_DEF[18]  = new int[]{TYPE_FIXED_CHAR,   4};
-        FIELD_DEF[19]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[20]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[21]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[22]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[23]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[24]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[25]  = new int[]{TYPE_FIXED_CHAR,   2};
-        FIELD_DEF[26]  = new int[]{TYPE_FIXED_CHAR,   2};
-        FIELD_DEF[27]  = new int[]{TYPE_FIXED_CHAR,   1};
-        FIELD_DEF[28]  = new int[]{TYPE_FIXED_CHAR,   9};
-        FIELD_DEF[29]  = new int[]{TYPE_FIXED_CHAR,   9};
-        FIELD_DEF[30]  = new int[]{TYPE_FIXED_CHAR,   9};
-        FIELD_DEF[31]  = new int[]{TYPE_FIXED_CHAR,   9};
-        FIELD_DEF[32]  = new int[]{TYPE_LLVAR_CHAR,  11};
-        FIELD_DEF[33]  = new int[]{TYPE_LLVAR_CHAR,  11};
-        FIELD_DEF[34]  = new int[]{TYPE_LLVAR_CHAR,  28};
-        FIELD_DEF[35]  = new int[]{TYPE_LLVAR_CHAR,  37};
-        FIELD_DEF[36]  = new int[]{TYPE_LLLVAR_CHAR,104};
-        FIELD_DEF[37]  = new int[]{TYPE_FIXED_CHAR,  12};
-        FIELD_DEF[38]  = new int[]{TYPE_FIXED_CHAR,   6};
-        FIELD_DEF[39]  = new int[]{TYPE_FIXED_CHAR,   2};
-        FIELD_DEF[40]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[41]  = new int[]{TYPE_FIXED_CHAR,   8};
-        FIELD_DEF[42]  = new int[]{TYPE_FIXED_CHAR,  15};
-        FIELD_DEF[43]  = new int[]{TYPE_FIXED_CHAR,  40};
-        FIELD_DEF[44]  = new int[]{TYPE_LLVAR_CHAR,  25};
-        FIELD_DEF[45]  = new int[]{TYPE_LLVAR_CHAR,  76};
-        FIELD_DEF[46]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[47]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[48]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[49]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[50]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[51]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[52]  = new int[]{TYPE_BINARY,        8};
-        FIELD_DEF[53]  = new int[]{TYPE_FIXED_CHAR,  16};
-        FIELD_DEF[54]  = new int[]{TYPE_LLLVAR_CHAR,120};
-        FIELD_DEF[55]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[56]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[57]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[58]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[59]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[60]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[61]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[62]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[63]  = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[64]  = new int[]{TYPE_BINARY,        8};
-        FIELD_DEF[65]  = new int[]{TYPE_BINARY,        8};
-        FIELD_DEF[66]  = new int[]{TYPE_FIXED_CHAR,   1};
-        FIELD_DEF[67]  = new int[]{TYPE_FIXED_CHAR,   2};
-        FIELD_DEF[68]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[69]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[70]  = new int[]{TYPE_FIXED_CHAR,   3};
-        FIELD_DEF[71]  = new int[]{TYPE_FIXED_CHAR,   4};
-        FIELD_DEF[72]  = new int[]{TYPE_FIXED_CHAR,   4};
-        FIELD_DEF[73]  = new int[]{TYPE_FIXED_CHAR,   6};
-        FIELD_DEF[74]  = new int[]{TYPE_FIXED_CHAR,  10};
-        FIELD_DEF[75]  = new int[]{TYPE_FIXED_CHAR,  10};
-        FIELD_DEF[76]  = new int[]{TYPE_FIXED_CHAR,  10};
-        FIELD_DEF[77]  = new int[]{TYPE_FIXED_CHAR,  10};
-        FIELD_DEF[78]  = new int[]{TYPE_FIXED_CHAR,  10};
-        FIELD_DEF[79]  = new int[]{TYPE_FIXED_CHAR,  10};
-        FIELD_DEF[80]  = new int[]{TYPE_FIXED_CHAR,  10};
-        FIELD_DEF[81]  = new int[]{TYPE_FIXED_CHAR,  10};
-        FIELD_DEF[82]  = new int[]{TYPE_FIXED_CHAR,  12};
-        FIELD_DEF[83]  = new int[]{TYPE_FIXED_CHAR,  12};
-        FIELD_DEF[84]  = new int[]{TYPE_FIXED_CHAR,  12};
-        FIELD_DEF[85]  = new int[]{TYPE_FIXED_CHAR,  12};
-        FIELD_DEF[86]  = new int[]{TYPE_FIXED_CHAR,  16};
-        FIELD_DEF[87]  = new int[]{TYPE_FIXED_CHAR,  16};
-        FIELD_DEF[88]  = new int[]{TYPE_FIXED_CHAR,  16};
-        FIELD_DEF[89]  = new int[]{TYPE_FIXED_CHAR,  16};
-        FIELD_DEF[90]  = new int[]{TYPE_FIXED_CHAR,  42};
-        FIELD_DEF[91]  = new int[]{TYPE_FIXED_CHAR,   1};
-        FIELD_DEF[92]  = new int[]{TYPE_FIXED_CHAR,   2};
-        FIELD_DEF[93]  = new int[]{TYPE_FIXED_CHAR,   5};
-        FIELD_DEF[94]  = new int[]{TYPE_FIXED_CHAR,   7};
-        FIELD_DEF[95]  = new int[]{TYPE_FIXED_CHAR,  42};
-        FIELD_DEF[96]  = new int[]{TYPE_BINARY,        8};
-        FIELD_DEF[97]  = new int[]{TYPE_FIXED_CHAR,  17};
-        FIELD_DEF[98]  = new int[]{TYPE_FIXED_CHAR,  25};
-        FIELD_DEF[99]  = new int[]{TYPE_LLVAR_CHAR,  11};
-        FIELD_DEF[100] = new int[]{TYPE_LLVAR_CHAR,  11};
-        FIELD_DEF[101] = new int[]{TYPE_LLVAR_CHAR,  17};
-        FIELD_DEF[102] = new int[]{TYPE_LLVAR_CHAR,  28};
-        FIELD_DEF[103] = new int[]{TYPE_LLVAR_CHAR,  28};
-        FIELD_DEF[104] = new int[]{TYPE_LLLVAR_CHAR,100};
-        FIELD_DEF[105] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[106] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[107] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[108] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[109] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[110] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[111] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[112] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[113] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[114] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[115] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[116] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[117] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[118] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[119] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[120] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[121] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[122] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[123] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[124] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[125] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[126] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[127] = new int[]{TYPE_LLLVAR_CHAR,999};
-        FIELD_DEF[128] = new int[]{TYPE_BINARY,        8};
+        GenericPackager p = null;
+        Exception err     = null;
+        try {
+            InputStream xml = ISOMessageParser.class
+                    .getResourceAsStream("/com/supundevendra/iso/packager.xml");
+            if (xml == null) {
+                throw new IllegalStateException(
+                        "packager.xml not found on classpath at " +
+                        "/com/supundevendra/iso/packager.xml");
+            }
+            p = new GenericPackager(xml);
+        } catch (Exception e) {
+            err = e;
+        }
+        PACKAGER            = p;
+        PACKAGER_INIT_ERROR = err;
     }
 
-    /**
-     * Parses the ISO 8583 message and prints the decoded output to stdout.
-     *
-     * @param rawInput raw hex string or any supported prefixed format
-     */
-    public void parse(String rawInput) {
-        System.out.print(parseToString(rawInput));
-    }
-
-    /**
+    /*
      * Parses the ISO 8583 message and returns the decoded output as a string.
-     *
-     * @param rawInput raw hex string or any supported prefixed format
-     * @return fully formatted decoded output
      */
     public String parseToString(String rawInput) {
         StringBuilder sb = new StringBuilder();
         try {
+            if (PACKAGER_INIT_ERROR != null) {
+                throw new IllegalStateException(
+                        "GenericPackager failed to initialise: " +
+                        PACKAGER_INIT_ERROR.getMessage(), PACKAGER_INIT_ERROR);
+            }
+
             String hex = extractHex(rawInput);
 
             sb.append("\n================================================================\n");
@@ -204,57 +64,65 @@ public class ISOMessageParser {
             byte[] rawBytes = EbcdicConverter.hexToBytes(hex);
 
             if (rawBytes.length <= HEADER_BYTES) {
-                throw new IllegalArgumentException("Message too short — must be longer than 2 header bytes.");
+                throw new IllegalArgumentException(
+                        "Message too short — must be longer than 2 header bytes.");
             }
 
+            // Log length header
             byte[] headerBytes = new byte[HEADER_BYTES];
             System.arraycopy(rawBytes, 0, headerBytes, 0, HEADER_BYTES);
             sb.append(String.format(" Length header   : %s (stripped, value=%d)\n",
                     EbcdicConverter.bytesToHex(headerBytes),
                     ((headerBytes[0] & 0xFF) << 8) | (headerBytes[1] & 0xFF)));
 
+            // Strip the 2-byte header and hand the rest to jPOS
             byte[] messageBytes = new byte[rawBytes.length - HEADER_BYTES];
             System.arraycopy(rawBytes, HEADER_BYTES, messageBytes, 0, messageBytes.length);
 
-            if (messageBytes.length < MTI_BYTES + BITMAP_BYTES) {
-                throw new IllegalArgumentException("Message body too short.");
+            ISOMsg msg = new ISOMsg();
+            msg.setPackager(PACKAGER);
+            PACKAGER.unpack(msg, messageBytes);
+
+            // Bitmap info — derive from which fields are set
+            String bitmapHex = extractBitmapHex(messageBytes);
+            sb.append(" Bitmap (hex)    : ").append(bitmapHex).append("\n");
+            sb.append(" Bitmap size     : ").append(
+                    msg.getMaxField() > 64
+                            ? "128-bit (primary + secondary)"
+                            : "64-bit  (primary only)").append("\n");
+
+            // Collect enabled fields and their decoded values
+            List<Integer> enabledFields = new ArrayList<>();
+            Map<Integer, String> parsedFields = new LinkedHashMap<>();
+
+            for (int i = 2; i <= 128; i++) {
+                if (!msg.hasField(i)) continue;
+                enabledFields.add(i);
+                try {
+                    org.jpos.iso.ISOComponent component = msg.getComponent(i);
+                    if (component instanceof org.jpos.iso.ISOMsg) {
+                        // Sub-field packager field — render all sub-fields
+                        parsedFields.put(i, formatSubFields((org.jpos.iso.ISOMsg) component));
+                    } else {
+                        byte[] raw = msg.getBytes(i);
+                        String strVal = msg.getString(i);
+                        if (strVal != null && !strVal.isEmpty() && isPrintable(strVal)) {
+                            parsedFields.put(i, strVal);
+                        } else if (raw != null) {
+                            parsedFields.put(i, "[binary: " + ISOUtil.hexString(raw).toUpperCase() + "]");
+                        } else {
+                            parsedFields.put(i, "[empty]");
+                        }
+                    }
+                } catch (Exception e) {
+                    parsedFields.put(i, "[error reading field: " + e.getMessage() + "]");
+                }
             }
-
-            byte[] mtiBytes = new byte[MTI_BYTES];
-            System.arraycopy(messageBytes, 0, mtiBytes, 0, MTI_BYTES);
-            String mti = new String(mtiBytes, EBCDIC).trim();
-
-            byte[] primaryBitmap = new byte[BITMAP_BYTES];
-            System.arraycopy(messageBytes, MTI_BYTES, primaryBitmap, 0, BITMAP_BYTES);
-
-            boolean hasSecondaryBitmap = (primaryBitmap[0] & 0x80) != 0;
-            int totalBitmapBytes = hasSecondaryBitmap ? 16 : 8;
-
-            if (messageBytes.length < MTI_BYTES + totalBitmapBytes) {
-                throw new IllegalArgumentException("Message too short for bitmap.");
-            }
-
-            byte[] bitmapBytes = new byte[totalBitmapBytes];
-            System.arraycopy(messageBytes, MTI_BYTES, bitmapBytes, 0, totalBitmapBytes);
-
-            sb.append(" Bitmap (hex)    : ").append(EbcdicConverter.bytesToHex(bitmapBytes).toUpperCase()).append("\n");
-            sb.append(" Bitmap size     : ").append(hasSecondaryBitmap
-                    ? "128-bit (primary + secondary)"
-                    : "64-bit  (primary only)").append("\n");
-
-            List<Integer> enabledFields = getEnabledFields(bitmapBytes);
-
-            int fieldDataOffset = MTI_BYTES + totalBitmapBytes;
-            byte[] fieldDataEbcdic = new byte[messageBytes.length - fieldDataOffset];
-            System.arraycopy(messageBytes, fieldDataOffset, fieldDataEbcdic, 0, fieldDataEbcdic.length);
-            byte[] fieldDataAscii = new String(fieldDataEbcdic, EBCDIC).getBytes(ASCII);
-
-            Map<Integer, String> parsedFields = parseFields(enabledFields, fieldDataAscii);
 
             String cardNetwork = detectCardNetwork(parsedFields.get(2));
             sb.append(" Card Network    : ").append(cardNetwork).append("\n");
 
-            buildResults(sb, mti, enabledFields, parsedFields);
+            buildResults(sb, msg.getMTI(), enabledFields, parsedFields);
 
         } catch (Exception e) {
             sb.append("\n[ERROR] Failed to parse ISO message: ").append(e.getMessage()).append("\n");
@@ -263,19 +131,15 @@ public class ISOMessageParser {
         return sb.toString();
     }
 
-    /**
+    // -------------------------------------------------------------------------
+    // Card network detection
+    // -------------------------------------------------------------------------
+
+    /*
      * Detects the card network from the Primary Account Number (Field 2).
-     *
-     * <p>Detection rules:
-     * <ul>
-     *   <li>Visa: starts with {@code 4}</li>
-     *   <li>Mastercard: starts with {@code 51}–{@code 55}, or in range {@code 2221}–{@code 2720}</li>
-     *   <li>Amex: starts with {@code 34} or {@code 37}</li>
-     *   <li>Discover: starts with {@code 6011}, {@code 622x}, {@code 644}–{@code 649}, or {@code 65}</li>
-     * </ul>
-     *
      * @param pan Field 2 PAN value; may be {@code null}
-     * @return {@code "VISA"}, {@code "MASTERCARD"}, {@code "AMEX"}, {@code "DISCOVER"}, or {@code "UNKNOWN"}
+     * return {@code "VISA"}, {@code "MASTERCARD"}, {@code "AMEX"},
+     *         {@code "DISCOVER"}, or {@code "UNKNOWN"}
      */
     public static String detectCardNetwork(String pan) {
         if (pan == null || pan.trim().isEmpty()) return "UNKNOWN";
@@ -309,14 +173,12 @@ public class ISOMessageParser {
         return "UNKNOWN";
     }
 
-    /**
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
+    /*
      * Extracts the hex payload from raw user input, supporting multiple formats:
-     * <ul>
-     *   <li>Multi-line: scans each line for a pure hex string</li>
-     *   <li>Single-line with network prefix: strips {@code "Received message from MASTERCARD:"}</li>
-     *   <li>Single-line with IP prefix: strips {@code "192.168.x.x :"}</li>
-     *   <li>Fallback: strips all non-hex characters</li>
-     * </ul>
      */
     private String extractHex(String rawInput) {
         if (rawInput == null || rawInput.trim().isEmpty()) {
@@ -332,8 +194,10 @@ public class ISOMessageParser {
             }
         }
 
-        cleaned = cleaned.replaceAll("(?i)received\\s+message\\s+from\\s+mastercard\\s*[::]?\\s*", "").trim();
-        cleaned = cleaned.replaceAll("\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\s*[::]?\\s*", "").trim();
+        cleaned = cleaned.replaceAll(
+                "(?i)received\\s+message\\s+from\\s+(mastercard|visa|amex|discover)\\s*[::]?\\s*", "").trim();
+        cleaned = cleaned.replaceAll(
+                "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\s*[::]?\\s*", "").trim();
 
         for (String token : cleaned.split("\\s+")) {
             if (token.matches("[0-9A-Fa-f]+") && token.length() >= 8) {
@@ -343,124 +207,66 @@ public class ISOMessageParser {
 
         String hexOnly = cleaned.replaceAll("[^0-9A-Fa-f]", "");
         if (hexOnly.length() >= 8) {
-            return (hexOnly.length() % 2 != 0) ? hexOnly.substring(0, hexOnly.length() - 1) : hexOnly;
+            return (hexOnly.length() % 2 != 0)
+                    ? hexOnly.substring(0, hexOnly.length() - 1)
+                    : hexOnly;
         }
 
-        throw new IllegalArgumentException("Could not extract a valid hex string from input.");
+        throw new IllegalArgumentException(
+                "Could not extract a valid hex string from input.");
     }
 
-    /**
-     * Returns the list of field numbers enabled in the bitmap.
-     * Fields 1 (bitmap) and 65 (secondary bitmap indicator) are excluded.
+    /*
+     * Reads the first 8 or 16 bytes of the message (after the header has been stripped) and returns them as an uppercase hex string for display.
      */
-    private List<Integer> getEnabledFields(byte[] bitmap) {
-        List<Integer> fields = new ArrayList<>();
-        for (int byteIdx = 0; byteIdx < bitmap.length; byteIdx++) {
-            int b = bitmap[byteIdx] & 0xFF;
-            for (int bit = 7; bit >= 0; bit--) {
-                int fieldNum = byteIdx * 8 + (8 - bit);
-                if ((b & (1 << bit)) != 0 && fieldNum != 1 && fieldNum != 65) {
-                    fields.add(fieldNum);
-                }
-            }
-        }
-        return fields;
+    private String extractBitmapHex(byte[] messageBytes) {
+        // MTI is 4 bytes (EBCDIC-encoded), bitmap starts at offset 4
+        int bitmapOffset = 4;
+        if (messageBytes.length < bitmapOffset + 8) return "N/A";
+        boolean hasSecondary = (messageBytes[bitmapOffset] & 0x80) != 0;
+        int bitmapLen = hasSecondary ? 16 : 8;
+        if (messageBytes.length < bitmapOffset + bitmapLen) bitmapLen = messageBytes.length - bitmapOffset;
+        byte[] bmap = new byte[bitmapLen];
+        System.arraycopy(messageBytes, bitmapOffset, bmap, 0, bitmapLen);
+        return EbcdicConverter.bytesToHex(bmap).toUpperCase();
     }
 
-    /**
-     * Walks the ASCII-decoded field data buffer and parses each enabled field.
-     *
-     * @param enabledFields field numbers to parse, in order
-     * @param data          EBCDIC-decoded field data as ASCII bytes
-     * @return ordered map of field number to decoded value string
+    /*
+     * Formats an {@link ISOMsg} sub-field container (e.g. Field 48, 54, 61) as a multi-line string showing each sub-field id and value.
      */
-    private Map<Integer, String> parseFields(List<Integer> enabledFields, byte[] data) {
-        Map<Integer, String> result = new LinkedHashMap<>();
-        int pos = 0;
-
-        for (int fieldNum : enabledFields) {
-            if (fieldNum < 1 || fieldNum > 128 || FIELD_DEF[fieldNum] == null) {
-                System.out.printf(" [WARN] Field %d: no definition, skipping%n", fieldNum);
-                continue;
+    private String formatSubFields(ISOMsg sub) {
+        StringBuilder sb = new StringBuilder("[sub-fields]");
+        try {
+            for (int i = 0; i <= sub.getMaxField(); i++) {
+                if (!sub.hasField(i)) continue;
+                String val = sub.getString(i);
+                if (val == null || val.isEmpty()) continue;
+                sb.append("\n      [").append(i).append("] ").append(val);
             }
-            if (pos > data.length) {
-                System.out.printf(" [WARN] Field %d: buffer exhausted at pos %d%n", fieldNum, pos);
-                break;
-            }
-
-            int type      = FIELD_DEF[fieldNum][0];
-            int maxLength = FIELD_DEF[fieldNum][1];
-
-            try {
-                switch (type) {
-                    case TYPE_FIXED_CHAR: {
-                        if (pos + maxLength > data.length) {
-                            result.put(fieldNum, "[buffer underrun]");
-                            pos = data.length;
-                        } else {
-                            result.put(fieldNum, new String(data, pos, maxLength, ASCII));
-                            pos += maxLength;
-                        }
-                        break;
-                    }
-                    case TYPE_LLVAR_CHAR: {
-                        if (pos + 2 > data.length) { result.put(fieldNum, "[buffer underrun reading LL]"); pos = data.length; break; }
-                        String llStr = new String(data, pos, 2, ASCII).trim();
-                        int len;
-                        try { len = Integer.parseInt(llStr); }
-                        catch (NumberFormatException e) { result.put(fieldNum, "[invalid LL: '" + llStr + "']"); pos += 2; break; }
-                        pos += 2;
-                        if (len > maxLength)          { result.put(fieldNum, "[LL " + len + " exceeds max " + maxLength + "]"); pos += Math.min(len, data.length - pos); break; }
-                        if (pos + len > data.length)  { result.put(fieldNum, "[buffer underrun reading " + len + " bytes]"); pos = data.length; break; }
-                        result.put(fieldNum, new String(data, pos, len, ASCII));
-                        pos += len;
-                        break;
-                    }
-                    case TYPE_LLLVAR_CHAR: {
-                        if (pos + 3 > data.length) { result.put(fieldNum, "[buffer underrun reading LLL]"); pos = data.length; break; }
-                        String lllStr = new String(data, pos, 3, ASCII).trim();
-                        int len;
-                        try { len = Integer.parseInt(lllStr); }
-                        catch (NumberFormatException e) { result.put(fieldNum, "[invalid LLL: '" + lllStr + "']"); pos += 3; break; }
-                        pos += 3;
-                        if (len > maxLength)          { result.put(fieldNum, "[LLL " + len + " exceeds max " + maxLength + "]"); pos += Math.min(len, data.length - pos); break; }
-                        if (pos + len > data.length)  { result.put(fieldNum, "[buffer underrun reading " + len + " bytes]"); pos = data.length; break; }
-                        result.put(fieldNum, new String(data, pos, len, ASCII));
-                        pos += len;
-                        break;
-                    }
-                    case TYPE_BINARY: {
-                        if (pos + maxLength > data.length) {
-                            result.put(fieldNum, "[binary - buffer underrun]");
-                            pos = data.length;
-                        } else {
-                            byte[] raw = new byte[maxLength];
-                            System.arraycopy(data, pos, raw, 0, maxLength);
-                            result.put(fieldNum, "[binary: " + EbcdicConverter.bytesToHex(raw).toUpperCase() + "]");
-                            pos += maxLength;
-                        }
-                        break;
-                    }
-                    default:
-                        result.put(fieldNum, "[unknown type]");
-                }
-            } catch (Exception e) {
-                result.put(fieldNum, "[parse error: " + e.getMessage() + "]");
-            }
-        }
-
-        return result;
+        } catch (Exception ignored) { }
+        return sb.toString();
     }
 
-    /**
+    /*
+     * Returns {@code true} if the string contains only printable ASCII (0x20–0x7E).
+     */
+    private boolean isPrintable(String s) {
+        for (char c : s.toCharArray()) {
+            if (c < 0x20 || c > 0x7E) return false;
+        }
+        return true;
+    }
+
+    /*
      * Appends the formatted decoded message to the given {@link StringBuilder}.
-     * Uses {@code \n} throughout to ensure clean line-by-line delivery over sockets.
      */
     private void buildResults(StringBuilder sb, String mti,
-                              List<Integer> enabledFields, Map<Integer, String> parsedFields) {
+                              List<Integer> enabledFields,
+                              Map<Integer, String> parsedFields) {
 
         sb.append("\n----------------------------------------------------------------\n");
-        sb.append(" MTI : ").append(mti).append("  (").append(ISOFieldDictionary.getMtiDescription(mti)).append(")\n");
+        sb.append(" MTI : ").append(mti)
+          .append("  (").append(ISOFieldDictionary.getMtiDescription(mti)).append(")\n");
         sb.append("----------------------------------------------------------------\n");
 
         sb.append("\n Enabled fields detected from bitmap:\n ");
@@ -478,8 +284,10 @@ public class ISOMessageParser {
         for (int fieldNum : enabledFields) {
             sb.append(String.format(" Field %-3d\n", fieldNum));
             sb.append("   Name        : ").append(ISOFieldDictionary.getName(fieldNum)).append("\n");
-            sb.append("   Value       : ").append(parsedFields.getOrDefault(fieldNum, "[not parsed]")).append("\n");
-            sb.append("   Description : ").append(ISOFieldDictionary.getDescription(fieldNum)).append("\n\n");
+            sb.append("   Value       : ").append(
+                    parsedFields.getOrDefault(fieldNum, "[not parsed]")).append("\n");
+            sb.append("   Description : ").append(
+                    ISOFieldDictionary.getDescription(fieldNum)).append("\n\n");
             count++;
         }
 

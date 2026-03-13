@@ -53,7 +53,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.supundevendra.iso.Main</mainClass>
+                            <mainClass>com.supundevendra.chat.server.Server</mainClass>
                         </manifest>
                     </archive>
                 </configuration>
@@ -66,7 +66,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.supundevendra.iso.Main</mainClass>
+                            <mainClass>com.supundevendra.chat.server.Server</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>

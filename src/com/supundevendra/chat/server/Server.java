@@ -37,10 +37,6 @@ public class Server {
         }
     }
 
-    public static void privateMessage(String targetUser, String message) {
-        sendToUser(targetUser, message);
-    }
-
     public static void sendToUser(String targetUser, String message) {
         synchronized (clients) {
             for (ClientHandler client : clients) {

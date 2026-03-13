@@ -4,12 +4,12 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
+/*
  * ISOFieldDictionary
- *
  * Contains all ISO 8583 field definitions (fields 1-128).
  * Each entry maps: field number -> [fieldName, description]
  */
+
 public class ISOFieldDictionary {
 
     private static final Map<Integer, String[]> FIELDS;
@@ -160,22 +160,20 @@ public class ISOFieldDictionary {
         return (entry != null) ? entry[0] : "Unknown Field";
     }
 
-    /**
+    /*
      * Get the description for a given field number.
-     *
      * @param fieldNumber ISO 8583 field number (1-128)
-     * @return field description, or "No description available" if not found
+     * return field description, or "No description available" if not found
      */
     public static String getDescription(int fieldNumber) {
         String[] entry = FIELDS.get(fieldNumber);
         return (entry != null) ? entry[1] : "No description available";
     }
 
-    /**
+    /*
      * Return a human-readable MTI description.
-     *
      * @param mti 4-character MTI string (e.g. "0100")
-     * @return description string
+     * return description string
      */
     public static String getMtiDescription(String mti) {
         if (mti == null || mti.length() < 4) return "Unknown";

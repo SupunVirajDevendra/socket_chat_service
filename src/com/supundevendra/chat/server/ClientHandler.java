@@ -84,7 +84,7 @@ public class ClientHandler implements Runnable {
             Server.sendToUser(targetUser, decoded);
             out.println("[Server] ISO 8583 message decoded and sent privately to " + targetUser + ".");
         } else {
-            Server.privateMessage(targetUser, username + " (private): " + payload);
+            Server.sendToUser(targetUser, username + " (private): " + payload);
         }
     }
 
@@ -99,16 +99,7 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    /**
-     * Returns true if the message contains an ISO 8583 hex payload in any of
-     * the supported formats:
-     * <ul>
-     *   <li>Pure hex string: {@code 016DF0F1...}</li>
-     *   <li>Single-line prefixed: {@code Received message from MASTERCARD: 192.168.1.34 : 016D...}</li>
-     *   <li>Multi-line prefixed: {@code Received message from MASTERCARD:\n192.168.1.34 : 016D...}</li>
-     *   <li>IP-prefixed: {@code 192.168.1.34 : 016D...}</li>
-     * </ul>
-     */
+    /*Detects ISO8583 messages.*/
     private boolean isIsoHexMessage(String message) {
         if (message == null) return false;
         if (message.matches("[0-9A-Fa-f]{20,}")) return true;
@@ -128,15 +119,6 @@ public class ClientHandler implements Runnable {
         return false;
     }
 
-    /**
-     * Parses the ISO 8583 hex payload and wraps the decoded output with a
-     * contextual header identifying the sender and, optionally, the private recipient.
-     *
-     * @param hex    raw ISO 8583 hex string (or any supported prefixed format)
-     * @param sender username of the client who sent the message
-     * @param target recipient username for private delivery; {@code null} for broadcast
-     * @return fully formatted decoded output ready to send
-     */
     private String parseIsoAndFormat(String hex, String sender, String target) {
         try {
             ISOMessageParser parser = new ISOMessageParser();
