@@ -1,4 +1,4 @@
-package com.supundevendra.iso;
+package com.supundevendra.chat.util;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -6,16 +6,32 @@ import java.util.Map;
 
 /*
  * ISOFieldDictionary
- * Contains all ISO 8583 field definitions (fields 1-128).
- * Each entry maps: field number -> [fieldName, description]
+ *
+ * This class stores information about all ISO 8583 fields (1–128).
+ * Each field number maps to:
+ *   [ field name , field description ]
+ *
+ * It is used by the ISO parser to display readable information
+ * instead of just showing field numbers.
  */
-
 public class ISOFieldDictionary {
 
+
+    // Map storing field definitions
+    // Key   -> Field number (1–128)
+    // Value -> [field name, description]
     private static final Map<Integer, String[]> FIELDS;
 
+    /*
+     * Static initialization block.
+     * Runs once when the class loads.
+     * It fills the map with all ISO8583 field definitions.
+     */
     static {
         Map<Integer, String[]> map = new HashMap<>();
+
+        // Example field definitions
+        // format: field number -> [field name, description]
 
         map.put(1,   new String[]{"Bitmap",                                    "Primary bitmap indicating presence of fields 1-64"});
         map.put(2,   new String[]{"Primary Account Number (PAN)",               "Card number used for the transaction"});
@@ -146,24 +162,30 @@ public class ISOFieldDictionary {
         map.put(127, new String[]{"Reserved Private",                           "Reserved for private use"});
         map.put(128, new String[]{"Message Authentication Code (MAC) Field",    "Secondary MAC for extended message integrity"});
 
+        /*
+         * Make the map immutable (cannot be modified later).
+         * This ensures thread safety and prevents accidental changes.
+         */
         FIELDS = Collections.unmodifiableMap(map);
     }
 
-    /**
-     * Get the field name for a given field number.
+    /*
+     * Returns the name of a field based on the field number.
      *
-     * @param fieldNumber ISO 8583 field number (1-128)
-     * @return field name, or "Unknown Field" if not found
+     * Example:
+     * getName(2) → "Primary Account Number (PAN)"
      */
     public static String getName(int fieldNumber) {
         String[] entry = FIELDS.get(fieldNumber);
+        // If field exists return name, otherwise return "Unknown Field"
         return (entry != null) ? entry[0] : "Unknown Field";
     }
 
     /*
-     * Get the description for a given field number.
-     * @param fieldNumber ISO 8583 field number (1-128)
-     * return field description, or "No description available" if not found
+     * Returns the description of a field.
+     *
+     * Example:
+     * getDescription(4) → "Amount of the transaction"
      */
     public static String getDescription(int fieldNumber) {
         String[] entry = FIELDS.get(fieldNumber);
@@ -171,9 +193,11 @@ public class ISOFieldDictionary {
     }
 
     /*
-     * Return a human-readable MTI description.
-     * @param mti 4-character MTI string (e.g. "0100")
-     * return description string
+     * Returns a readable description for the MTI (Message Type Indicator).
+     *
+     * Example:
+     * 0200 → Financial Transaction Request
+     * 0210 → Financial Transaction Response
      */
     public static String getMtiDescription(String mti) {
         if (mti == null || mti.length() < 4) return "Unknown";
@@ -201,6 +225,7 @@ public class ISOFieldDictionary {
             case "0810": return "Network Management Response";
             case "0820": return "Network Management Advice";
             default:
+                // If MTI not in list, detect message class
                 char cls = mti.charAt(1);
                 switch (cls) {
                     case '1': return "Authorization Message";

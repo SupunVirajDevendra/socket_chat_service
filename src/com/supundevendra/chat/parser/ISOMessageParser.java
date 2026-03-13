@@ -1,5 +1,7 @@
-package com.supundevendra.iso;
+package com.supundevendra.chat.parser;
 
+import com.supundevendra.chat.util.EbcdicConverter;
+import com.supundevendra.chat.util.ISOFieldDictionary;
 import org.jpos.iso.ISOMsg;
 import org.jpos.iso.ISOUtil;
 import org.jpos.iso.packager.GenericPackager;
@@ -12,27 +14,38 @@ import java.util.Map;
 
 
 /*
- * ISO 8583 message parser backed by the jPOS
+ * ISO 8583 message parser using the jPOS library.
+ * This class reads a raw ISO8583 hex message and converts it
+ * into a human readable decoded format.
  */
 public class ISOMessageParser {
 
+    // ISO messages often start with a 2-byte length header
     private static final int HEADER_BYTES = 2;
 
-    /* Singleton packager loaded from classpath packager.xml */
+    // jPOS packager used to unpack ISO8583 fields
     private static final GenericPackager PACKAGER;
+    // Stores error if packager fails to initialize
     private static final Exception       PACKAGER_INIT_ERROR;
 
+    /*
+     * Static block runs once when the class loads.
+     * It loads packager.xml which defines ISO8583 field structure.
+     */
     static {
         GenericPackager p = null;
         Exception err     = null;
+
         try {
+            // Load packager configuration file
             InputStream xml = ISOMessageParser.class
-                    .getResourceAsStream("/com/supundevendra/iso/packager.xml");
+                    .getResourceAsStream("/resources/packager.xml");
             if (xml == null) {
                 throw new IllegalStateException(
                         "packager.xml not found on classpath at " +
-                        "/com/supundevendra/iso/packager.xml");
+                                "/resources/packager.xml");
             }
+            // Create jPOS packager
             p = new GenericPackager(xml);
         } catch (Exception e) {
             err = e;
@@ -42,17 +55,20 @@ public class ISOMessageParser {
     }
 
     /*
-     * Parses the ISO 8583 message and returns the decoded output as a string.
+     * Main method that parses an ISO8583 message and returns
+     * a formatted readable string.
      */
     public String parseToString(String rawInput) {
         StringBuilder sb = new StringBuilder();
         try {
+            // Check if packager loaded successfully
             if (PACKAGER_INIT_ERROR != null) {
                 throw new IllegalStateException(
                         "GenericPackager failed to initialise: " +
                         PACKAGER_INIT_ERROR.getMessage(), PACKAGER_INIT_ERROR);
             }
 
+            // Extract hex payload from input
             String hex = extractHex(rawInput);
 
             sb.append("\n================================================================\n");
@@ -61,53 +77,68 @@ public class ISOMessageParser {
             sb.append(String.format(" Raw hex length  : %d chars (%d bytes)\n",
                     hex.length(), hex.length() / 2));
 
+            // Convert hex string to byte array
             byte[] rawBytes = EbcdicConverter.hexToBytes(hex);
 
+            // Check if message contains header + data
             if (rawBytes.length <= HEADER_BYTES) {
                 throw new IllegalArgumentException(
                         "Message too short — must be longer than 2 header bytes.");
             }
 
-            // Log length header
+            // Read the 2-byte length header
             byte[] headerBytes = new byte[HEADER_BYTES];
             System.arraycopy(rawBytes, 0, headerBytes, 0, HEADER_BYTES);
             sb.append(String.format(" Length header   : %s (stripped, value=%d)\n",
                     EbcdicConverter.bytesToHex(headerBytes),
                     ((headerBytes[0] & 0xFF) << 8) | (headerBytes[1] & 0xFF)));
 
-            // Strip the 2-byte header and hand the rest to jPOS
+            // Remove header and keep actual ISO message
             byte[] messageBytes = new byte[rawBytes.length - HEADER_BYTES];
             System.arraycopy(rawBytes, HEADER_BYTES, messageBytes, 0, messageBytes.length);
 
+            // Create ISO message object
             ISOMsg msg = new ISOMsg();
             msg.setPackager(PACKAGER);
+
+            // Unpack ISO fields using jPOS
             PACKAGER.unpack(msg, messageBytes);
 
-            // Bitmap info — derive from which fields are set
+            // Extract bitmap for display
             String bitmapHex = extractBitmapHex(messageBytes);
             sb.append(" Bitmap (hex)    : ").append(bitmapHex).append("\n");
+
+            // Determine bitmap size
             sb.append(" Bitmap size     : ").append(
                     msg.getMaxField() > 64
                             ? "128-bit (primary + secondary)"
                             : "64-bit  (primary only)").append("\n");
 
-            // Collect enabled fields and their decoded values
+            // Store fields detected in bitmap
             List<Integer> enabledFields = new ArrayList<>();
+            // Store decoded field values
             Map<Integer, String> parsedFields = new LinkedHashMap<>();
 
+            // Check fields from 2 to 128
             for (int i = 2; i <= 128; i++) {
                 if (!msg.hasField(i)) continue;
                 enabledFields.add(i);
                 try {
+                    // Read field component
                     org.jpos.iso.ISOComponent component = msg.getComponent(i);
+                    // Handle sub-fields (fields like 48 or 54)
                     if (component instanceof org.jpos.iso.ISOMsg) {
                         // Sub-field packager field — render all sub-fields
                         parsedFields.put(i, formatSubFields((org.jpos.iso.ISOMsg) component));
                     } else {
                         byte[] raw = msg.getBytes(i);
                         String strVal = msg.getString(i);
+
+                        // If printable text
                         if (strVal != null && !strVal.isEmpty() && isPrintable(strVal)) {
                             parsedFields.put(i, strVal);
+
+                            // If binary data
                         } else if (raw != null) {
                             parsedFields.put(i, "[binary: " + ISOUtil.hexString(raw).toUpperCase() + "]");
                         } else {
@@ -119,9 +150,11 @@ public class ISOMessageParser {
                 }
             }
 
+            // Detect card network from PAN (Field 2)
             String cardNetwork = detectCardNetwork(parsedFields.get(2));
             sb.append(" Card Network    : ").append(cardNetwork).append("\n");
 
+            // Build final decoded output
             buildResults(sb, msg.getMTI(), enabledFields, parsedFields);
 
         } catch (Exception e) {
@@ -131,26 +164,22 @@ public class ISOMessageParser {
         return sb.toString();
     }
 
-    // -------------------------------------------------------------------------
-    // Card network detection
-    // -------------------------------------------------------------------------
-
     /*
-     * Detects the card network from the Primary Account Number (Field 2).
-     * @param pan Field 2 PAN value; may be {@code null}
-     * return {@code "VISA"}, {@code "MASTERCARD"}, {@code "AMEX"},
-     *         {@code "DISCOVER"}, or {@code "UNKNOWN"}
+     * Detect card network using PAN (field 2).
+     * Uses BIN ranges.
      */
     public static String detectCardNetwork(String pan) {
         if (pan == null || pan.trim().isEmpty()) return "UNKNOWN";
 
         String p = pan.trim();
-
+        // VISA cards start with 4
         if (p.startsWith("4")) return "VISA";
 
+        // AMEX
         if (p.length() >= 2) {
             String prefix2 = p.substring(0, 2);
             if (prefix2.equals("34") || prefix2.equals("37")) return "AMEX";
+            // MasterCard ranges
             try {
                 int n = Integer.parseInt(prefix2);
                 if (n >= 51 && n <= 55) return "MASTERCARD";
@@ -173,12 +202,9 @@ public class ISOMessageParser {
         return "UNKNOWN";
     }
 
-    // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
-
     /*
-     * Extracts the hex payload from raw user input, supporting multiple formats:
+     * Extracts hex message from raw input.
+     * Supports many formats (logs, prefixes, etc).
      */
     private String extractHex(String rawInput) {
         if (rawInput == null || rawInput.trim().isEmpty()) {
@@ -194,17 +220,18 @@ public class ISOMessageParser {
             }
         }
 
+        // Case 1: pure hex line and Remove common prefixes
         cleaned = cleaned.replaceAll(
                 "(?i)received\\s+message\\s+from\\s+(mastercard|visa|amex|discover)\\s*[::]?\\s*", "").trim();
         cleaned = cleaned.replaceAll(
                 "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\s*[::]?\\s*", "").trim();
-
         for (String token : cleaned.split("\\s+")) {
             if (token.matches("[0-9A-Fa-f]+") && token.length() >= 8) {
                 return token;
             }
         }
 
+        // Keep only hex characters
         String hexOnly = cleaned.replaceAll("[^0-9A-Fa-f]", "");
         if (hexOnly.length() >= 8) {
             return (hexOnly.length() % 2 != 0)
@@ -217,9 +244,10 @@ public class ISOMessageParser {
     }
 
     /*
-     * Reads the first 8 or 16 bytes of the message (after the header has been stripped) and returns them as an uppercase hex string for display.
+     * Reads bitmap bytes and converts them to hex for display.
      */
     private String extractBitmapHex(byte[] messageBytes) {
+
         // MTI is 4 bytes (EBCDIC-encoded), bitmap starts at offset 4
         int bitmapOffset = 4;
         if (messageBytes.length < bitmapOffset + 8) return "N/A";
@@ -232,7 +260,7 @@ public class ISOMessageParser {
     }
 
     /*
-     * Formats an {@link ISOMsg} sub-field container (e.g. Field 48, 54, 61) as a multi-line string showing each sub-field id and value.
+     * Formats sub-fields (fields containing nested data).
      */
     private String formatSubFields(ISOMsg sub) {
         StringBuilder sb = new StringBuilder("[sub-fields]");
@@ -248,7 +276,7 @@ public class ISOMessageParser {
     }
 
     /*
-     * Returns {@code true} if the string contains only printable ASCII (0x20–0x7E).
+     * Check if string contains printable ASCII characters.
      */
     private boolean isPrintable(String s) {
         for (char c : s.toCharArray()) {
@@ -258,7 +286,7 @@ public class ISOMessageParser {
     }
 
     /*
-     * Appends the formatted decoded message to the given {@link StringBuilder}.
+     * Builds the final formatted decoded output.
      */
     private void buildResults(StringBuilder sb, String mti,
                               List<Integer> enabledFields,
