@@ -1,217 +1,192 @@
 package com.supundevendra.chat.server;
 
-import com.supundevendra.chat.parser.ISOMessageParser;
-
-import java.io.*;
-import java.net.*;
+import org.jpos.iso.ISOMsg;
+import org.jpos.iso.packager.GenericPackager;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 
 public class ClientHandler implements Runnable {
 
-    // Default username if user does not provide one
-    private static final String DEFAULT_USERNAME = "anonymous";
-    // Separator used to display decoded ISO messages clearly
-    private static final String SEPARATOR = "================================================================";
+    /** Shared packager loaded once from packager.xml — thread-safe for unpack/pack. */
+    private static final GenericPackager PACKAGER;
 
-    private final Socket socket;// Socket connection for this client
-    private BufferedReader in;// Input stream to read messages from client
-    private PrintWriter out; // Output stream to send messages to client
-    private String username = DEFAULT_USERNAME;  // Username of this client
+    static {
+        try (InputStream xml = ClientHandler.class.getResourceAsStream("/resources/packager.xml")) {
+            if (xml == null) {
+                throw new IllegalStateException("packager.xml not found on classpath");
+            }
+            PACKAGER = new GenericPackager(xml);
+        } catch (Exception e) {
+            throw new ExceptionInInitializerError("Cannot load packager.xml: " + e.getMessage());
+        }
+    }
 
-    // Constructor: sets up communication streams for the client
+    private final Socket socket;
+    private OutputStream out;
+
     public ClientHandler(Socket socket) {
         this.socket = socket;
+    }
+
+    public String getAddress() {
+        return socket.getRemoteSocketAddress().toString();
+    }
+
+    /** Sends a text dump to this client, prefixed with type byte 0x02. */
+    public void sendText(String message) {
         try {
-            // Read data coming from client
-            in  = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            // Send data to client
-            out = new PrintWriter(socket.getOutputStream(), true);
+            byte[] data = (message + "\n").getBytes(StandardCharsets.UTF_8);
+            synchronized (this) {
+                out.write(0x02);   // type: text dump
+                out.write(data);
+                out.flush();
+            }
         } catch (IOException e) {
-            System.out.println("Failed to initialise client streams.");
+            System.err.println("Send failed to " + getAddress() + ": " + e.getMessage());
         }
     }
 
-    // Returns the client's username
-    public String getUsername() {
-        return username;
-    }
-
-    // Main thread execution for each connected client
     @Override
     public void run() {
-        try {
-            // Ask client for username
-            username = readUsername();
+        String addr = getAddress();
+        try (InputStream in = socket.getInputStream();
+             OutputStream os = socket.getOutputStream()) {
 
-            // Notify all users that someone joined
-            Server.broadcast(username + " joined the chat.", this);
-            // Log connection event
-            Server.logMessage(username + " connected.");
+            this.out = os;
 
-            String message;
+            // Handshake: 0x00 = listener, 0x01 = sender
+            int mode = in.read();
+            if (mode == -1) return;
 
-            // Continuously read messages from client
-            while ((message = in.readLine()) != null) {
-                // If user types "exit", disconnect
-                if (message.equalsIgnoreCase("exit")) {
-                    Server.logMessage(username + " disconnected.");
-                    break;
-                }
-                // Route message depending on type
-                route(message);
+            if (mode == 0x00) {
+                runListener(in);
+                return;
             }
 
-        } catch (IOException e) {
-            System.out.println("Connection error with " + username);
-            Server.logMessage("Connection error with " + username);
-        } finally {
-            // Always cleanup when client disconnects
-            cleanup();
-        }
-    }
+            if (mode == 0x01) {
+                runSender(in, addr);
+            }
 
-    // Reads username from client input
-    private String readUsername() throws IOException {
-        out.println("Enter your username:");
-        String name = in.readLine();
-        // If username is empty, use default
-        return (name == null || name.trim().isEmpty()) ? DEFAULT_USERNAME : name.trim();
-    }
-
-    // Decides how to handle the received message
-    private void route(String message) {
-
-        // Private message format: @username message
-        if (message.startsWith("@")) {
-            handleDirectedMessage(message);
-
-            // If message looks like ISO8583 hex message
-        } else if (isIsoHexMessage(message)) {
-            // Decode ISO message
-            String decoded = parseIsoAndFormat(message, username, null);
-            // Broadcast decoded message
-            Server.broadcast(decoded, this);
-            out.println("[Server] ISO 8583 message decoded and broadcast to all clients.");
-
-            // Normal chat message
-        } else {
-            Server.broadcast(username + " : " + message, this);
-        }
-    }
-
-    // Handles private messages sent to a specific user
-    private void handleDirectedMessage(String message) {
-
-        // Split message into username and actual message
-        String[] parts = message.split(" ", 2);
-        if (parts.length < 2) return;
-
-        // Extract target username
-        String targetUser = parts[0].substring(1);
-        // Extract message body
-        String payload    = parts[1].trim();
-
-        // If payload is ISO message
-        if (isIsoHexMessage(payload)) {
-            String decoded = parseIsoAndFormat(payload, username, targetUser);
-
-            // Send decoded ISO message privately
-            Server.sendToUser(targetUser, decoded);
-            out.println("[Server] ISO 8583 message decoded and sent privately to " + targetUser + ".");
-        } else {
-            // Send normal private message
-            Server.sendToUser(targetUser, username + " (private): " + payload);
-        }
-    }
-
-    // Cleans up resources when client disconnects
-    private void cleanup() {
-        try {
-
-            // Remove client from server list
-            Server.removeClient(this);
-
-            // Notify other clients
-            Server.broadcast(username + " left the chat.", this);
-
-            // Close socket connection
-            socket.close();
-
-        } catch (IOException e) {
-            System.out.println("Error closing connection for " + username);
-            Server.logMessage("Error closing connection for " + username);
-        }
-    }
-
-    // Detects whether a message is an ISO8583 hex message
-    private boolean isIsoHexMessage(String message) {
-        if (message == null) return false;
-
-        // Case 1: message is a long hex string
-        if (message.matches("[0-9A-Fa-f]{20,}")) return true;
-        String lower = message.trim().toLowerCase();
-
-        // Case 2: message starts with network prefix
-        if (lower.startsWith("received message from mastercard") ||
-            lower.startsWith("received message from visa")       ||
-            lower.startsWith("received message from amex")       ||
-            lower.startsWith("received message from discover")) {
-            return true;
-        }
-
-        // Case 3: message contains hex token somewhere
-        for (String token : message.split("[\\s:]+")) {
-            if (token.matches("[0-9A-Fa-f]{20,}")) return true;
-        }
-
-        return false;
-    }
-
-    // Parses ISO8583 message and formats it for display
-    private String parseIsoAndFormat(String hex, String sender, String target) {
-        try {
-            // Create parser
-            ISOMessageParser parser = new ISOMessageParser();
-            // Decode ISO message
-            String decoded  = parser.parseToString(hex);
-            // Detect card network
-            String network  = extractNetwork(decoded);
-
-            // Build display label
-            String label = (target != null)
-                    ? sender + " sent a " + network + " ISO 8583 message privately to " + target
-                    : sender + " sent a " + network + " ISO 8583 message";
-
-            // Return formatted result
-            return SEPARATOR + "\n [" + label + "]\n" + SEPARATOR + decoded;
-
+        } catch (EOFException e) {
+            // Client disconnected cleanly — no action needed
         } catch (Exception e) {
-            // If parsing fails
-            return "[ISO Parse Error from " + sender + "]: " + e.getMessage();
+            System.err.println("Error on client " + addr + ": " + e.getMessage());
+        } finally {
+            Server.removeClient(this);
         }
     }
 
-    // Detects card network from decoded message text
-    private String extractNetwork(String decoded) {
-        if (decoded.contains("Card Network    : MASTERCARD")) return "MASTERCARD";
-        if (decoded.contains("Card Network    : VISA"))       return "VISA";
-        if (decoded.contains("Card Network    : AMEX"))       return "AMEX";
-        if (decoded.contains("Card Network    : DISCOVER"))   return "DISCOVER";
-        return "ISO 8583";
+    /** Listener mode: block until the client disconnects. */
+    private void runListener(InputStream in) throws IOException {
+        while (in.read() != -1) {
+            // Discard any bytes; we only need to hold the connection open
+            // so sendText() can push broadcast messages to this client.
+        }
     }
 
-    /*
-     * Sends message to this client.
-     * If message has multiple lines, send them line-by-line
-     * so the client can read them properly.
-     */
-    public void sendMessage(String message) {
-        if (message == null) return;
-        if (message.contains("\n")) {
-            for (String line : message.split("\\r?\\n", -1)) {
-                out.println(line);
+    /** Sender mode: read ISO 8583 messages, broadcast field dump, reply with 0110. */
+    private void runSender(InputStream in, String addr) throws Exception {
+        while (true) {
+            // Read 2-byte big-endian length header
+            byte[] header = readExact(in, 2);
+            int len = ((header[0] & 0xFF) << 8) | (header[1] & 0xFF);
+
+            // Read ISO 8583 payload
+            byte[] payload = readExact(in, len);
+
+            // Unpack with jPOS
+            ISOMsg msg = new ISOMsg();
+            msg.setPackager(PACKAGER);
+            PACKAGER.unpack(msg, payload);
+
+            String dump = buildDump(msg, addr);
+
+            // Send 0110 authorization response back to this sender only
+            sendResponse(msg);
+
+            // Broadcast decoded field dump to all other connected clients
+            Server.broadcast(dump, this);
+        }
+    }
+
+    /** Builds a human-readable dump of all ISO 8583 fields. */
+    private String buildDump(ISOMsg msg, String addr) throws Exception {
+        StringBuilder sb = new StringBuilder();
+        sb.append("================================================================\n");
+        sb.append(" ISO 8583 MESSAGE from ").append(addr).append("\n");
+        sb.append("================================================================\n");
+        sb.append(String.format("MTI       : %s%n", msg.getMTI()));
+        for (int i = 2; i <= 128; i++) {
+            if (msg.hasField(i)) {
+                String value = fieldToReadable(msg, i);
+                if (!value.isEmpty()) {
+                    sb.append(String.format("Field %3d : %s%n", i, value));
+                }
             }
-        } else {
-            out.println(message);
         }
+        sb.append("================================================================\n");
+        sb.append("--END-OF-DUMP--");
+        return sb.toString();
+    }
+
+    /** Packs a 0110 approval response and sends it prefixed with type byte 0x01 + 2-byte length header. */
+    private void sendResponse(ISOMsg msg) throws Exception {
+        ISOMsg resp = (ISOMsg) msg.clone();
+        resp.setMTI("0110");
+        resp.set(39, "00"); // Response code: approved
+
+        byte[] respBytes = PACKAGER.pack(resp);
+        byte[] frame = new byte[3 + respBytes.length];
+        frame[0] = 0x01;   // type: binary ISO response
+        frame[1] = (byte) ((respBytes.length >> 8) & 0xFF);
+        frame[2] = (byte) (respBytes.length & 0xFF);
+        System.arraycopy(respBytes, 0, frame, 3, respBytes.length);
+
+        synchronized (this) {
+            out.write(frame);
+            out.flush();
+        }
+    }
+
+    /** Reads exactly {@code n} bytes, handling TCP partial reads. */
+    private static byte[] readExact(InputStream in, int n) throws IOException {
+        byte[] buf = new byte[n];
+        int offset = 0;
+        while (offset < n) {
+            int read = in.read(buf, offset, n - offset);
+            if (read == -1) {
+                throw new EOFException("Stream ended at " + offset + "/" + n);
+            }
+            offset += read;
+        }
+        return buf;
+    }
+
+    /**
+     * Returns a human-readable value for an ISO 8583 field.
+     * jPOS decodes EBCDIC internally during unpack, so getString() gives the
+     * correct plain-text value for all text/numeric fields.
+     * Truly binary fields (PIN block, MACs) return null from getString() —
+     * those are shown as uppercase hex instead.
+     */
+    private static String fieldToReadable(ISOMsg msg, int fieldNum) {
+        String value = msg.getString(fieldNum);
+        if (value != null) {
+            return value;
+        }
+        // Binary field (e.g. field 52 PIN block, field 64/128 MAC) — show as hex
+        byte[] raw = msg.getBytes(fieldNum);
+        return (raw != null) ? "[HEX] " + toHex(raw) : "";
+    }
+
+    /** Converts a byte array to an uppercase hex string. */
+    private static String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) sb.append(String.format("%02X", b));
+        return sb.toString();
     }
 }
