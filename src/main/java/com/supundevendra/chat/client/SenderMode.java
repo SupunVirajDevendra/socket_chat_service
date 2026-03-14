@@ -1,7 +1,10 @@
 package com.supundevendra.chat.client;
 
+import com.supundevendra.chat.config.AppConfig;
 import com.supundevendra.chat.util.HexUtil;
 import com.supundevendra.chat.util.StreamUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.BufferedReader;
 import java.io.EOFException;
 import java.io.IOException;
@@ -16,8 +19,8 @@ import java.util.regex.Pattern;
 // Sender mode: sends raw ISO 8583 hex to the server and prints the response and field dump
 public class SenderMode {
 
-    private static final String  HOST      = "localhost"; // server hostname
-    private static final int     PORT      = 8583;        // server port
+    private static final Logger log = LoggerFactory.getLogger(SenderMode.class); // per-class logger
+
     private static final Pattern HEX_REGEX = Pattern.compile("[0-9A-Fa-f]+"); // validates hex input
 
     // Type byte meaning the server is sending a binary ISO response frame
@@ -32,7 +35,11 @@ public class SenderMode {
 
     // Connects to the server, starts a receiver thread, then reads hex from stdin and sends it
     public static void run() throws IOException {
-        System.out.println("=== ISO 8583 Sender — " + HOST + ":" + PORT + " ===");
+        AppConfig config = AppConfig.getInstance(); // load host/port from config.properties
+        String host = config.getHost();             // server hostname
+        int    port = config.getPort();             // server port
+
+        System.out.println("=== ISO 8583 Sender — " + host + ":" + port + " ===");
         System.out.println("Paste raw hex and press Enter to send. Type 'exit' to quit.");
         System.out.println();
 
@@ -40,9 +47,9 @@ public class SenderMode {
         BufferedReader stdin = new BufferedReader(
                 new InputStreamReader(System.in, StandardCharsets.UTF_8));
 
-        try (Socket       socket = new Socket(HOST, PORT);     // connect to server
-             OutputStream out    = socket.getOutputStream();   // stream for sending
-             InputStream  in     = socket.getInputStream()) {  // stream for receiving
+        try (Socket       socket = new Socket(host, port);    // connect to server
+             OutputStream out    = socket.getOutputStream();  // stream for sending
+             InputStream  in     = socket.getInputStream()) { // stream for receiving
 
             out.write(HANDSHAKE_SENDER); // identify as sender
             out.flush();                 // send the handshake byte immediately
@@ -75,7 +82,7 @@ public class SenderMode {
                 // server closed the connection — expected on exit
             } catch (IOException e) {
                 if (running[0]) {
-                    System.err.println("[Receiver error] " + e.getMessage()); // only log if not shutting down
+                    log.warn("Receiver error: {}", e.getMessage()); // only log if not shutting down
                 }
             }
         }, "iso-receiver");
@@ -108,7 +115,7 @@ public class SenderMode {
                                      boolean[] running) throws IOException {
         while (true) {
             System.out.print("> ");
-            System.out.flush();           // ensure the prompt appears before blocking
+            System.out.flush();              // ensure the prompt appears before blocking
             String input = stdin.readLine(); // block until the user presses Enter
 
             if (input == null || input.trim().equalsIgnoreCase("exit")) {

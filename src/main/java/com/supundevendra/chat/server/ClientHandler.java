@@ -1,7 +1,10 @@
 package com.supundevendra.chat.server;
 
+import com.supundevendra.chat.exception.IsoProcessingException;
 import com.supundevendra.chat.protocol.IsoMessageProcessor;
 import org.jpos.iso.ISOMsg;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -11,6 +14,8 @@ import java.nio.charset.StandardCharsets;
 
 // Manages one client connection on its own thread: handshake, framing, and lifecycle
 public class ClientHandler implements Runnable {
+
+    private static final Logger log = LoggerFactory.getLogger(ClientHandler.class); // per-class logger
 
     // Type byte prefix written before text-dump frames sent to this client
     private static final byte TYPE_TEXT_DUMP = 0x02;
@@ -29,7 +34,7 @@ public class ClientHandler implements Runnable {
     public ClientHandler(Socket socket, ClientRegistry registry) {
         this.socket    = socket;
         this.registry  = registry;
-        this.processor = new IsoMessageProcessor();
+        this.processor = new IsoMessageProcessor(); // one processor instance per handler
     }
 
     // Returns the remote address as a string for logging
@@ -48,7 +53,7 @@ public class ClientHandler implements Runnable {
                 out.flush();               // send immediately
             }
         } catch (IOException e) {
-            System.err.println("Send failed to " + getAddress() + ": " + e.getMessage());
+            log.warn("Send failed to {}: {}", getAddress(), e.getMessage()); // warn, not fatal
         } catch (NullPointerException e) {
             // out became null between the null-check and write — client is disconnecting
         }
@@ -71,13 +76,13 @@ public class ClientHandler implements Runnable {
             } else if (mode == MODE_SENDER) {
                 runSender(in, addr);   // process incoming ISO messages
             } else {
-                System.err.println("Unknown handshake 0x" + Integer.toHexString(mode) + " from " + addr);
+                log.warn("Unknown handshake 0x{} from {}", Integer.toHexString(mode), addr);
             }
 
         } catch (EOFException e) {
             // client disconnected cleanly — no action needed
         } catch (Exception e) {
-            System.err.println("Error on client " + addr + ": " + e.getMessage());
+            log.error("Error on client {}: {}", addr, e.getMessage(), e); // log full stack trace
         } finally {
             synchronized (this) { out = null; }  // prevent sendText() writing to closed stream
             registry.removeClient(this);          // unregister and log the disconnect
@@ -92,11 +97,20 @@ public class ClientHandler implements Runnable {
     }
 
     // Sender mode: loop reading ISO frames, replying with 0110, and broadcasting the dump
-    private void runSender(InputStream in, String addr) throws Exception {
+    private void runSender(InputStream in, String addr) throws IOException {
         while (true) {
-            byte[] payload = processor.readFrame(in);          // read next ISO 8583 frame
-            ISOMsg  msg    = processor.unpack(payload);        // decode bytes into fields
-            String  dump   = processor.buildDump(msg, addr);   // build human-readable dump
+            byte[] payload;
+            ISOMsg  msg;
+            String  dump;
+
+            try {
+                payload = processor.readFrame(in);         // read next ISO 8583 frame
+                msg     = processor.unpack(payload);       // decode bytes into fields
+                dump    = processor.buildDump(msg, addr);  // build human-readable dump
+            } catch (IsoProcessingException e) {
+                log.error("ISO processing error from {}: {}", addr, e.getMessage()); // log and skip bad frame
+                continue; // skip to the next frame rather than closing the connection
+            }
 
             synchronized (this) {
                 processor.sendResponse(msg, out); // send 0110 approval back to this sender

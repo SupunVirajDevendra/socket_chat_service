@@ -7,35 +7,55 @@
 
     <groupId>com.supundevendra</groupId>
     <artifactId>assignment4</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- dependency versions in one place for easy upgrades -->
+        <jpos.version>2.1.9</jpos.version>
+        <slf4j.version>2.0.13</slf4j.version>
+        <log4j2.version>2.23.1</log4j2.version>
     </properties>
 
     <dependencies>
+
+        <!-- ISO 8583 message packing / unpacking -->
         <dependency>
             <groupId>org.jpos</groupId>
             <artifactId>jpos</artifactId>
-            <version>2.1.9</version>
+            <version>${jpos.version}</version>
         </dependency>
+
+        <!-- Logging API — code only depends on this interface -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+
+        <!-- Log4j2 binding that routes SLF4J calls into Log4j2 -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-slf4j2-impl</artifactId>
+            <version>${log4j2.version}</version>
+        </dependency>
+
+        <!-- Log4j2 core — provides the actual appenders and formatters -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>${log4j2.version}</version>
+        </dependency>
+
     </dependencies>
 
     <build>
-        <sourceDirectory>src</sourceDirectory>
-
-        <resources>
-            <resource>
-                <directory>src</directory>
-                <excludes>
-                    <exclude>**/*.java</exclude>
-                </excludes>
-            </resource>
-        </resources>
-
         <plugins>
+
+            <!-- Compile with Java 17 -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -46,6 +66,7 @@
                 </configuration>
             </plugin>
 
+            <!-- Thin jar with server as the main class -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
@@ -59,6 +80,7 @@
                 </configuration>
             </plugin>
 
+            <!-- Fat jar: bundles all dependencies so the jar is self-contained -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-assembly-plugin</artifactId>
@@ -84,6 +106,7 @@
                     </execution>
                 </executions>
             </plugin>
+
         </plugins>
     </build>
 

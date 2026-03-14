@@ -1,6 +1,9 @@
 package com.supundevendra.chat.client;
 
+import com.supundevendra.chat.config.AppConfig;
 import com.supundevendra.chat.util.StreamUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.Socket;
@@ -8,8 +11,7 @@ import java.net.Socket;
 // Listener mode: connects to the server and prints every broadcast field dump it receives
 public class ListenerMode {
 
-    private static final String HOST = "localhost"; // server hostname
-    private static final int    PORT = 8583;        // server port
+    private static final Logger log = LoggerFactory.getLogger(ListenerMode.class); // per-class logger
 
     // Type byte that indicates the server is sending a text field dump
     private static final int TYPE_TEXT_DUMP     = 0x02;
@@ -21,14 +23,19 @@ public class ListenerMode {
 
     // Connects to the server, sends the listener handshake, then reads and prints broadcast dumps
     public static void run() throws IOException {
-        System.out.println("=== ISO 8583 Listener — " + HOST + ":" + PORT + " ===");
+        AppConfig config = AppConfig.getInstance(); // load host/port from config.properties
+        String host = config.getHost();             // server hostname
+        int    port = config.getPort();             // server port
 
-        try (Socket      socket = new Socket(HOST, PORT);      // connect to the server
-             InputStream in     = socket.getInputStream()) {   // stream for receiving broadcasts
+        System.out.println("=== ISO 8583 Listener — " + host + ":" + port + " ===");
+
+        try (Socket      socket = new Socket(host, port);       // connect to the server
+             InputStream in     = socket.getInputStream()) {    // stream for receiving broadcasts
 
             socket.getOutputStream().write(HANDSHAKE_LISTENER); // identify as a listener
             socket.getOutputStream().flush();                    // send the handshake byte immediately
             System.out.println("Connected. Waiting for broadcasts...");
+            log.info("Listener connected to {}:{}", host, port); // structured log for the connection
 
             while (true) {
                 int type = in.read();       // read the type byte of the next frame
@@ -41,6 +48,7 @@ public class ListenerMode {
             }
         }
 
+        log.info("Listener disconnected.");
         System.out.println("Connection closed.");
     }
 
