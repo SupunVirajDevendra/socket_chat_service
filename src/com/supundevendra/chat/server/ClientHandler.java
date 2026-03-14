@@ -9,126 +9,100 @@ import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 
-/**
- * Handles a single client connection on its own thread.
- *
- * <p>Responsibilities:
- * <ul>
- *   <li>Reading the 1-byte handshake to determine client mode</li>
- *   <li>Delegating to {@link #runListener} or {@link #runSender}</li>
- *   <li>Writing text-dump frames to this client via {@link #sendText}</li>
- *   <li>Cleaning up via {@link ClientRegistry} on disconnect</li>
- * </ul>
- *
- * <p>All ISO 8583 business logic is handled by {@link IsoMessageProcessor}.
- */
+// Manages one client connection on its own thread: handshake, framing, and lifecycle
 public class ClientHandler implements Runnable {
 
-    /** Type byte prefix for outbound text-dump frames. */
+    // Type byte prefix written before text-dump frames sent to this client
     private static final byte TYPE_TEXT_DUMP = 0x02;
+    // Handshake byte that identifies a listener client
+    private static final int  MODE_LISTENER  = 0x00;
+    // Handshake byte that identifies a sender client
+    private static final int  MODE_SENDER    = 0x01;
 
-    /** Handshake byte sent by listener clients. */
-    private static final int MODE_LISTENER = 0x00;
+    private final Socket               socket;     // the accepted TCP connection
+    private final ClientRegistry       registry;   // shared registry for broadcast and removal
+    private final IsoMessageProcessor  processor;  // handles all ISO 8583 logic
 
-    /** Handshake byte sent by sender clients. */
-    private static final int MODE_SENDER = 0x01;
+    private OutputStream out; // output stream set once run() opens the socket streams
 
-    private final Socket           socket;
-    private final ClientRegistry   registry;
-    private final IsoMessageProcessor processor;
-
-    private OutputStream out;
-
+    // Constructor: stores the socket and registry, creates a processor for this session
     public ClientHandler(Socket socket, ClientRegistry registry) {
-        this.socket     = socket;
-        this.registry   = registry;
-        this.processor  = new IsoMessageProcessor();
+        this.socket    = socket;
+        this.registry  = registry;
+        this.processor = new IsoMessageProcessor();
     }
 
-    /** Returns the remote address of this client as a display string. */
+    // Returns the remote address as a string for logging
     public String getAddress() {
         return socket.getRemoteSocketAddress().toString();
     }
 
-    /**
-     * Sends a text dump frame to this client.
-     * Safe to call from any thread. Silently drops the message if the
-     * output stream is not yet initialized or has already been closed.
-     */
+    // Sends a text-dump frame to this client; safe to call from any thread
     public void sendText(String message) {
         try {
-            byte[] data = (message + "\n").getBytes(StandardCharsets.UTF_8);
+            byte[] data = (message + "\n").getBytes(StandardCharsets.UTF_8); // encode as UTF-8
             synchronized (this) {
-                if (out == null) return; // not yet ready — client still in handshake
-                out.write(TYPE_TEXT_DUMP);
-                out.write(data);
-                out.flush();
+                if (out == null) return;   // stream not ready yet — client still in handshake
+                out.write(TYPE_TEXT_DUMP); // type byte 0x02
+                out.write(data);           // message content
+                out.flush();               // send immediately
             }
         } catch (IOException e) {
             System.err.println("Send failed to " + getAddress() + ": " + e.getMessage());
         } catch (NullPointerException e) {
-            // out became null between the null-check and the write — client is disconnecting
+            // out became null between the null-check and write — client is disconnecting
         }
     }
 
+    // Thread entry point: opens streams, reads handshake, delegates to sender or listener mode
     @Override
     public void run() {
-        String addr = getAddress();
+        String addr = getAddress(); // capture address before socket closes
         try (InputStream in = socket.getInputStream();
              OutputStream os = socket.getOutputStream()) {
 
-            this.out = os;
+            this.out = os; // make the stream available to sendText()
 
-            // Handshake: 0x00 = listener, 0x01 = sender
-            int mode = in.read();
-            if (mode == -1) return;
+            int mode = in.read(); // read the 1-byte handshake from the client
+            if (mode == -1) return; // client disconnected before sending handshake
 
             if (mode == MODE_LISTENER) {
-                runListener(in);
+                runListener(in);       // hold connection open for broadcasts
             } else if (mode == MODE_SENDER) {
-                runSender(in, addr);
+                runSender(in, addr);   // process incoming ISO messages
             } else {
-                System.err.println("Unknown handshake byte 0x"
-                        + Integer.toHexString(mode) + " from " + addr);
+                System.err.println("Unknown handshake 0x" + Integer.toHexString(mode) + " from " + addr);
             }
 
         } catch (EOFException e) {
-            // Client disconnected cleanly — no action needed
+            // client disconnected cleanly — no action needed
         } catch (Exception e) {
             System.err.println("Error on client " + addr + ": " + e.getMessage());
         } finally {
-            synchronized (this) { out = null; }
-            registry.removeClient(this);
+            synchronized (this) { out = null; }  // prevent sendText() writing to closed stream
+            registry.removeClient(this);          // unregister and log the disconnect
         }
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    /**
-     * Listener mode: hold the connection open so {@link #sendText} can push
-     * broadcast frames. Discards any bytes the client sends.
-     */
+    // Listener mode: block until client disconnects, discarding any bytes it sends
     private void runListener(InputStream in) throws IOException {
         while (in.read() != -1) {
-            // Discard incoming bytes — we only push outbound broadcasts
+            // drain any bytes — we only push outbound broadcasts to listeners
         }
     }
 
-    /**
-     * Sender mode: read ISO 8583 frames in a loop, broadcast a field dump to
-     * all other clients, and reply with a {@code 0110} approval response.
-     */
+    // Sender mode: loop reading ISO frames, replying with 0110, and broadcasting the dump
     private void runSender(InputStream in, String addr) throws Exception {
         while (true) {
-            byte[] payload = processor.readFrame(in);
-            ISOMsg  msg    = processor.unpack(payload);
-            String  dump   = processor.buildDump(msg, addr);
+            byte[] payload = processor.readFrame(in);          // read next ISO 8583 frame
+            ISOMsg  msg    = processor.unpack(payload);        // decode bytes into fields
+            String  dump   = processor.buildDump(msg, addr);   // build human-readable dump
 
             synchronized (this) {
-                processor.sendResponse(msg, out);
+                processor.sendResponse(msg, out); // send 0110 approval back to this sender
             }
 
-            registry.broadcast(dump, this);
+            registry.broadcast(dump, this); // push the dump to all other connected clients
         }
     }
 }

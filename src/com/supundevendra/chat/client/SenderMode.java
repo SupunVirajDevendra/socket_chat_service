@@ -13,125 +13,121 @@ import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.regex.Pattern;
 
-/**
- * Sender mode: connects to the server, sends raw ISO 8583 hex frames read
- * from stdin, and prints the decoded field dump and binary response received
- * back from the server.
- */
+// Sender mode: sends raw ISO 8583 hex to the server and prints the response and field dump
 public class SenderMode {
 
-    private static final String  HOST      = "localhost";
-    private static final int     PORT      = 8583;
-    private static final Pattern HEX_REGEX = Pattern.compile("[0-9A-Fa-f]+");
+    private static final String  HOST      = "localhost"; // server hostname
+    private static final int     PORT      = 8583;        // server port
+    private static final Pattern HEX_REGEX = Pattern.compile("[0-9A-Fa-f]+"); // validates hex input
 
-    /** Type bytes used in the server → client framing protocol. */
+    // Type byte meaning the server is sending a binary ISO response frame
     private static final int TYPE_BINARY_RESPONSE = 0x01;
+    // Type byte meaning the server is sending a text field dump
     private static final int TYPE_TEXT_DUMP       = 0x02;
+    // Handshake byte that tells the server this is a sender connection
+    private static final int HANDSHAKE_SENDER     = 0x01;
 
-    /** Handshake byte identifying this connection as a sender. */
-    private static final int HANDSHAKE_SENDER = 0x01;
-
+    // Prevent instantiation — all methods are static entry points
     private SenderMode() {}
 
-    /**
-     * Starts sender mode. Blocks until the user types {@code exit} or stdin closes.
-     */
+    // Connects to the server, starts a receiver thread, then reads hex from stdin and sends it
     public static void run() throws IOException {
         System.out.println("=== ISO 8583 Sender — " + HOST + ":" + PORT + " ===");
         System.out.println("Paste raw hex and press Enter to send. Type 'exit' to quit.");
         System.out.println();
 
+        // Wrap stdin in a BufferedReader so we can read whole lines
         BufferedReader stdin = new BufferedReader(
                 new InputStreamReader(System.in, StandardCharsets.UTF_8));
 
-        try (Socket       socket = new Socket(HOST, PORT);
-             OutputStream out    = socket.getOutputStream();
-             InputStream  in     = socket.getInputStream()) {
+        try (Socket       socket = new Socket(HOST, PORT);     // connect to server
+             OutputStream out    = socket.getOutputStream();   // stream for sending
+             InputStream  in     = socket.getInputStream()) {  // stream for receiving
 
-            out.write(HANDSHAKE_SENDER);
-            out.flush();
+            out.write(HANDSHAKE_SENDER); // identify as sender
+            out.flush();                 // send the handshake byte immediately
 
-            // Background thread: reads type-framed messages from the server and prints them.
-            final boolean[] running = {true};
-            Thread receiver = buildReceiverThread(in, running);
-            receiver.setDaemon(true);
-            receiver.start();
+            final boolean[] running = {true}; // shared flag to stop the receiver thread on exit
+            Thread receiver = buildReceiverThread(in, running); // create background reader
+            receiver.setDaemon(true); // let the JVM exit even if receiver is still running
+            receiver.start();         // start reading server responses in the background
 
-            // Main thread: read hex lines from stdin and send to server.
-            runStdinLoop(stdin, out, running);
+            runStdinLoop(stdin, out, running); // block here reading user input
         }
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
-
+    // Creates a background thread that reads and prints framed messages from the server
     private static Thread buildReceiverThread(InputStream in, boolean[] running) {
         return new Thread(() -> {
             try {
                 while (running[0]) {
-                    int type = in.read();
-                    if (type == -1) break;
+                    int type = in.read();       // read the type byte of the next frame
+                    if (type == -1) break;      // server closed the connection
 
                     if (type == TYPE_BINARY_RESPONSE) {
-                        printBinaryResponse(in);
+                        printBinaryResponse(in); // handle binary 0110 response frame
                     } else if (type == TYPE_TEXT_DUMP) {
-                        printTextDump(in);
+                        printTextDump(in);       // handle text field dump frame
                     }
-                    // Unknown type bytes are silently skipped for forward compatibility.
+                    // unrecognised type bytes are silently skipped
                 }
             } catch (EOFException | SocketException ignored) {
-                // Server closed the connection — normal on exit.
+                // server closed the connection — expected on exit
             } catch (IOException e) {
                 if (running[0]) {
-                    System.err.println("[Receiver error] " + e.getMessage());
+                    System.err.println("[Receiver error] " + e.getMessage()); // only log if not shutting down
                 }
             }
         }, "iso-receiver");
     }
 
+    // Reads a binary 0110 response frame and prints it as hex
     private static void printBinaryResponse(InputStream in) throws IOException {
-        byte[] hdr     = StreamUtil.readExact(in, 2);
-        int    len     = ((hdr[0] & 0xFF) << 8) | (hdr[1] & 0xFF);
-        byte[] payload = StreamUtil.readExact(in, len);
+        byte[] hdr     = StreamUtil.readExact(in, 2);                        // read 2-byte length header
+        int    len     = ((hdr[0] & 0xFF) << 8) | (hdr[1] & 0xFF);          // combine bytes into length
+        byte[] payload = StreamUtil.readExact(in, len);                      // read ISO payload
         System.out.println("\nResponse (0110) hex:");
-        System.out.println(HexUtil.toHex(payload));
+        System.out.println(HexUtil.toHex(payload)); // print payload as uppercase hex
         System.out.println();
     }
 
+    // Reads a text dump frame line by line and prints it until the end marker is found
     private static void printTextDump(InputStream in) throws IOException {
         System.out.println("\nDecoded fields:");
         String line;
-        while ((line = StreamUtil.readTextLine(in)) != null) {
-            if (line.equals("--END-OF-DUMP--")) break;
-            System.out.println(line);
+        while ((line = StreamUtil.readTextLine(in)) != null) { // read one line at a time
+            if (line.equals("--END-OF-DUMP--")) break;         // stop at the end marker
+            System.out.println(line);                          // print the field line
         }
         System.out.println();
     }
 
+    // Reads hex strings from stdin and sends them to the server; exits on "exit" or EOF
     private static void runStdinLoop(BufferedReader stdin,
                                      OutputStream out,
                                      boolean[] running) throws IOException {
         while (true) {
             System.out.print("> ");
-            System.out.flush();
-            String input = stdin.readLine();
+            System.out.flush();           // ensure the prompt appears before blocking
+            String input = stdin.readLine(); // block until the user presses Enter
 
             if (input == null || input.trim().equalsIgnoreCase("exit")) {
                 System.out.println("Disconnecting.");
-                running[0] = false;
+                running[0] = false; // signal receiver thread to stop
                 break;
             }
 
             String hex = input.trim();
-            if (hex.isEmpty()) continue;
+            if (hex.isEmpty()) continue; // ignore blank lines
 
             if (!HEX_REGEX.matcher(hex).matches() || hex.length() % 2 != 0) {
                 System.out.println("[Error] Input must be an even-length hex string (e.g. 016DF0F1...)");
-                continue;
+                continue; // ask for input again
             }
 
-            byte[] raw = HexUtil.hexToBytes(hex);
-            out.write(raw);
-            out.flush();
+            byte[] raw = HexUtil.hexToBytes(hex); // convert hex string to bytes
+            out.write(raw);                        // send the ISO 8583 frame
+            out.flush();                           // push bytes to the server immediately
             System.out.println("Sent " + raw.length + " bytes.");
         }
     }

@@ -4,49 +4,41 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/**
- * Singleton registry that tracks all active {@link ClientHandler} connections.
- *
- * <p>Provides thread-safe operations for adding, removing, and broadcasting
- * to connected clients. Use {@link #getInstance()} to obtain the shared instance.
- */
+// Singleton that tracks all active client connections and provides broadcast/remove operations
 public class ClientRegistry {
 
+    // Single shared instance created eagerly at class load time
     private static final ClientRegistry INSTANCE = new ClientRegistry();
 
+    // Thread-safe list of currently connected clients
     private final List<ClientHandler> clients =
             Collections.synchronizedList(new ArrayList<>());
 
+    // Private constructor prevents external instantiation
     private ClientRegistry() {}
 
-    /** Returns the single shared {@link ClientRegistry} instance. */
+    // Returns the single shared ClientRegistry instance
     public static ClientRegistry getInstance() {
         return INSTANCE;
     }
 
-    /** Registers a newly connected client. */
+    // Registers a newly accepted client so it can receive broadcasts
     public void addClient(ClientHandler handler) {
         clients.add(handler);
     }
 
-    /**
-     * Removes a client from the registry on disconnect.
-     * Safe to call from any thread, including the client's own handler thread.
-     */
+    // Removes a client from the registry when it disconnects and logs the event
     public void removeClient(ClientHandler handler) {
-        clients.remove(handler);
-        System.out.println("Client disconnected: " + handler.getAddress());
+        clients.remove(handler);                                        // unregister the client
+        System.out.println("Client disconnected: " + handler.getAddress()); // log disconnect
     }
 
-    /**
-     * Broadcasts {@code message} to every registered client except {@code sender}.
-     * Each send is performed under the registry lock to avoid concurrent modification.
-     */
+    // Sends message to every registered client except the original sender
     public void broadcast(String message, ClientHandler sender) {
-        synchronized (clients) {
-            for (ClientHandler client : clients) {
-                if (client != sender) {
-                    client.sendText(message);
+        synchronized (clients) {                    // lock to prevent concurrent modification
+            for (ClientHandler client : clients) {  // iterate all connected clients
+                if (client != sender) {             // skip the client who sent the message
+                    client.sendText(message);       // push the dump to this listener
                 }
             }
         }

@@ -1,115 +1,91 @@
 package com.supundevendra.chat.protocol;
 
 import com.supundevendra.chat.util.HexUtil;
+import com.supundevendra.chat.util.StreamUtil;
 import org.jpos.iso.ISOMsg;
 import org.jpos.iso.packager.GenericPackager;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
-/**
- * Handles ISO 8583 message processing for a single connected sender session.
- *
- * <p>Responsibilities:
- * <ul>
- *   <li>Unpacking raw bytes into an {@link ISOMsg}</li>
- *   <li>Building a human-readable field dump</li>
- *   <li>Packing and sending a {@code 0110} approval response</li>
- * </ul>
- *
- * <p>Instantiate once per sender connection and call
- * {@link #unpack(byte[])}, {@link #buildDump(ISOMsg, String)},
- * and {@link #sendResponse(ISOMsg, OutputStream)} as needed.
- */
+// Handles all ISO 8583 message logic for one sender session: unpack, dump, respond
 public class IsoMessageProcessor {
 
-    private static final int FIELD_RESPONSE_CODE = 39;
-    private static final String RESPONSE_MTI      = "0110";
-    private static final String APPROVED_CODE     = "00";
+    // ISO 8583 field number that carries the response code
+    private static final int    FIELD_RESPONSE_CODE  = 39;
+    // MTI for an authorization response message
+    private static final String RESPONSE_MTI         = "0110";
+    // Response code meaning "approved"
+    private static final String APPROVED_CODE        = "00";
+    // Type byte written before a binary ISO response frame
+    public  static final byte   TYPE_BINARY_RESPONSE = 0x01;
 
-    /** Type byte written before a binary ISO response frame. */
-    public static final byte TYPE_BINARY_RESPONSE = 0x01;
-
+    // Shared packager used for pack and unpack operations
     private final GenericPackager packager;
 
+    // Constructor: obtains the shared packager from PackagerLoader
     public IsoMessageProcessor() {
         this.packager = PackagerLoader.getPackager();
     }
 
-    /**
-     * Unpacks {@code rawBytes} into an {@link ISOMsg}.
-     */
+    // Reads one ISO frame from the stream: 2-byte length header then that many payload bytes
+    public byte[] readFrame(InputStream in) throws IOException {
+        byte[] header = StreamUtil.readExact(in, 2);                          // read 2-byte length prefix
+        int len = ((header[0] & 0xFF) << 8) | (header[1] & 0xFF);            // combine bytes into int length
+        return StreamUtil.readExact(in, len);                                 // read the ISO payload
+    }
+
+    // Unpacks raw ISO 8583 bytes into an ISOMsg object
     public ISOMsg unpack(byte[] rawBytes) throws Exception {
-        ISOMsg msg = new ISOMsg();
-        msg.setPackager(packager);
-        packager.unpack(msg, rawBytes);
+        ISOMsg msg = new ISOMsg();          // create empty message container
+        msg.setPackager(packager);          // attach the field definitions
+        packager.unpack(msg, rawBytes);     // decode the bytes into fields
         return msg;
     }
 
-    /**
-     * Reads an ISO 8583 payload from {@code in}: first 2-byte big-endian length
-     * header, then that many bytes of ISO data.
-     */
-    public byte[] readFrame(InputStream in) throws IOException {
-        byte[] header = com.supundevendra.chat.util.StreamUtil.readExact(in, 2);
-        int len = ((header[0] & 0xFF) << 8) | (header[1] & 0xFF);
-        return com.supundevendra.chat.util.StreamUtil.readExact(in, len);
-    }
-
-    /**
-     * Builds a human-readable dump of all ISO 8583 fields in {@code msg}.
-     *
-     * @param msg  the unpacked ISO message
-     * @param addr the remote address of the sender, for display
-     */
+    // Builds a human-readable text dump of all fields in the message
     public String buildDump(ISOMsg msg, String addr) throws Exception {
         StringBuilder sb = new StringBuilder();
         sb.append("================================================================\n");
-        sb.append(" ISO 8583 MESSAGE from ").append(addr).append("\n");
+        sb.append(" ISO 8583 MESSAGE from ").append(addr).append("\n");       // show sender address
         sb.append("================================================================\n");
-        sb.append(String.format("MTI       : %s%n", msg.getMTI()));
-        for (int i = 2; i <= 128; i++) {
-            if (msg.hasField(i)) {
-                String value = fieldToReadable(msg, i);
+        sb.append(String.format("MTI       : %s%n", msg.getMTI()));           // print the message type
+        for (int i = 2; i <= 128; i++) {                                      // iterate all possible fields
+            if (msg.hasField(i)) {                                            // skip absent fields
+                String value = fieldToReadable(msg, i);                       // get printable value
                 if (!value.isEmpty()) {
-                    sb.append(String.format("Field %3d : %s%n", i, value));
+                    sb.append(String.format("Field %3d : %s%n", i, value));   // append field line
                 }
             }
         }
         sb.append("================================================================\n");
-        sb.append("--END-OF-DUMP--");
+        sb.append("--END-OF-DUMP--");   // marker used by client to detect end of dump
         return sb.toString();
     }
 
-    /**
-     * Packs a {@code 0110} approval response and writes it to {@code out}
-     * prefixed with type byte {@code 0x01} and a 2-byte big-endian length header.
-     */
+    // Packs a 0110 approval response and writes it to the output stream with a type+length header
     public void sendResponse(ISOMsg msg, OutputStream out) throws Exception {
-        ISOMsg resp = (ISOMsg) msg.clone();
-        resp.setMTI(RESPONSE_MTI);
-        resp.set(FIELD_RESPONSE_CODE, APPROVED_CODE);
+        ISOMsg resp = (ISOMsg) msg.clone();         // copy the original message
+        resp.setMTI(RESPONSE_MTI);                  // change MTI to 0110 response
+        resp.set(FIELD_RESPONSE_CODE, APPROVED_CODE); // set field 39 = "00" approved
 
-        byte[] respBytes = packager.pack(resp);
-        byte[] frame = new byte[3 + respBytes.length];
-        frame[0] = TYPE_BINARY_RESPONSE;
-        frame[1] = (byte) ((respBytes.length >> 8) & 0xFF);
-        frame[2] = (byte) (respBytes.length & 0xFF);
-        System.arraycopy(respBytes, 0, frame, 3, respBytes.length);
+        byte[] respBytes = packager.pack(resp);     // encode response to bytes
+        byte[] frame = new byte[3 + respBytes.length]; // 1 type byte + 2 length bytes + payload
+        frame[0] = TYPE_BINARY_RESPONSE;            // type byte 0x01
+        frame[1] = (byte) ((respBytes.length >> 8) & 0xFF); // high byte of length
+        frame[2] = (byte) (respBytes.length & 0xFF);        // low byte of length
+        System.arraycopy(respBytes, 0, frame, 3, respBytes.length); // copy payload after header
 
-        out.write(frame);
-        out.flush();
+        out.write(frame);   // send the full framed response
+        out.flush();        // ensure bytes leave the buffer immediately
     }
 
-    /**
-     * Returns a human-readable value for a single ISO 8583 field.
-     * Text/numeric fields are returned as-is (jPOS decodes EBCDIC during unpack).
-     * Truly binary fields (PIN block, MACs) are returned as {@code "[HEX] ..."}.
-     */
+    // Returns a printable value for a single ISO field
+    // Text fields come back as strings; binary fields (e.g. PIN block) come back as hex
     private static String fieldToReadable(ISOMsg msg, int fieldNum) {
-        String value = msg.getString(fieldNum);
-        if (value != null) return value;
-        byte[] raw = msg.getBytes(fieldNum);
-        return (raw != null) ? "[HEX] " + HexUtil.toHex(raw) : "";
+        String value = msg.getString(fieldNum);                         // try text decode first
+        if (value != null) return value;                                // return if available
+        byte[] raw = msg.getBytes(fieldNum);                            // fall back to raw bytes
+        return (raw != null) ? "[HEX] " + HexUtil.toHex(raw) : "";     // show as hex or empty
     }
 }
